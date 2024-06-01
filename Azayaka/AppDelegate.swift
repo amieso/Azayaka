@@ -22,8 +22,10 @@ struct Azayaka: App {
         Task {
             await recorder.startRecording()
             
-            DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: {
-              recorder.stopRecording()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: {
+                Task {
+                    await recorder.stopRecording()
+                }
             })
         }
     }

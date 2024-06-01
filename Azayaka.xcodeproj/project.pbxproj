@@ -11,7 +11,6 @@
 		17322D4F2958D08000185BB6 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 17322D4E2958D08000185BB6 /* Assets.xcassets */; };
 		17322D5C295928BE00185BB6 /* Recording.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17322D5B295928BE00185BB6 /* Recording.swift */; };
 		175E29402BD2C94D00EB9F4C /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = 175E293F2BD2C94D00EB9F4C /* KeyboardShortcuts */; };
-		17BCDC80295BAC9400448A97 /* Types.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17BCDC7F295BAC9300448A97 /* Types.swift */; };
 		18B09AB72BCB6D74005CDC4E /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 18B09AB92BCB6D74005CDC4E /* Localizable.strings */; };
 /* End PBXBuildFile section */
 
@@ -22,7 +21,6 @@
 		17322D4E2958D08000185BB6 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		17322D532958D08000185BB6 /* Azayaka.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Azayaka.entitlements; sourceTree = "<group>"; };
 		17322D5B295928BE00185BB6 /* Recording.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Recording.swift; sourceTree = "<group>"; };
-		17BCDC7F295BAC9300448A97 /* Types.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Types.swift; sourceTree = "<group>"; };
 		18B09AB82BCB6D74005CDC4E /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		18B09ABA2BCB6D8D005CDC4E /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -59,7 +57,6 @@
 			isa = PBXGroup;
 			children = (
 				17322D4A2958D07E00185BB6 /* AppDelegate.swift */,
-				17BCDC7F295BAC9300448A97 /* Types.swift */,
 				17322D5B295928BE00185BB6 /* Recording.swift */,
 				18B09AB92BCB6D74005CDC4E /* Localizable.strings */,
 				17322D4E2958D08000185BB6 /* Assets.xcassets */,
@@ -146,7 +143,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				17BCDC80295BAC9400448A97 /* Types.swift in Sources */,
 				17322D4B2958D07E00185BB6 /* AppDelegate.swift in Sources */,
 				17322D5C295928BE00185BB6 /* Recording.swift in Sources */,
 			);

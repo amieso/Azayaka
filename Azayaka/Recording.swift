@@ -4,82 +4,82 @@ import ScreenCaptureKit
 import AVFAudio
 import AVFoundation
 
-enum Preferences {
-    static let fileName = "outputFileName"
-}
-
+@available(macOS 13.0, *)
 class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
-    var vW: AVAssetWriter!
-    var awInput, micInput: AVAssetWriterInput!
-    let audioEngine = AVAudioEngine()
-    var startTime: Date?
-    var stream: SCStream!
-    var filePath: String!
+    enum AudioQuality: Int {
+        case normal = 128, good = 192, high = 256, extreme = 320
+    }
+    
+    private let audioEngine = AVAudioEngine()
+    private var assetWriter: AVAssetWriter?
+    private var audioInput, micInput: AVAssetWriterInput?
+    private var startTime: Date?
+    private var stream: SCStream?
+
     let audioSettings: [String : Any] = [
         AVSampleRateKey : 48000,
         AVNumberOfChannelsKey : 2,
         AVFormatIDKey: kAudioFormatMPEG4AAC,
-        AVEncoderBitRateKey: AudioQuality.high.rawValue * 1000
+        AVEncoderBitRateKey: AudioQuality.normal.rawValue * 1000
     ]
-    var filter: SCContentFilter?
     
-    var screen: SCDisplay?
-    var window: SCWindow?
-    var streamType: StreamType?
-    let ud = UserDefaults.standard
-    
-    override init() {
-        let userDesktop =
-        (NSSearchPathForDirectoriesInDomains(.desktopDirectory, .userDomainMask, true) as [String])
-            .first!
-        
-        // the `com.apple.screencapture` domain has the user set path for where they want to store screenshots or videos
-        let saveDirectory =
-        (UserDefaults(suiteName: "com.apple.screencapture")?.string(forKey: "location") ?? userDesktop)
-        as NSString
-        
-        streamType = .systemaudio
-        
-        ud.register( // default defaults (used if not set)
-            defaults: [
-                "encoder": Encoder.h264.rawValue,
-                "saveDirectory": saveDirectory,
-                Preferences.fileName: "Meeting_%t"
-            ]
-        )
-        
-        super.init()
-    }
-    
-    func startRecording() async {
+//    let logger = NodeLogger.shared
+
+    @MainActor
+    func startRecording() async -> String? {
         let micCheck = await performMicCheck()
         
-        if (!micCheck) { return }
+        if (!micCheck) { return nil }
         
-        let availableContent = try! await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        
-        await record(availableContent: availableContent)
+        do {
+            let availableContent = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            await record(availableContent: availableContent)
+            return assetWriter?.outputURL.absoluteString.replacingOccurrences(of: "file://", with: "")
+        } catch let error {
+           switch error {
+                case SCStreamError.userDeclined:
+                    DispatchQueue.main.async {
+                        NSWorkspace.shared.open(
+                            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+                        )
+                    }
+                default:
+//                    logger.error("Failed to start recording \(error)")
+                    break
+            }
+
+            return nil
+        }
     }
     
-    func performMicCheck() async -> Bool {
-        if await AVCaptureDevice.requestAccess(for: .audio) { return true }
-        
-        
-        DispatchQueue.main.async {
-            let alert = NSAlert()
-            alert.messageText = "Amie needs permissions"
-            alert.informativeText = "Amie needs permission to record your microphone"
-            alert.addButton(withTitle: "Open Settings")
-            alert.addButton(withTitle: "No thanks")
-            alert.alertStyle = .warning
-            if alert.runModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(
-                    URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
-                )
-            }
+    @MainActor func performMicCheck() async -> Bool {
+        let mediaType = AVMediaType.audio
+        let mediaAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: mediaType)
+        switch mediaAuthorizationStatus {
+            case .denied, .restricted:
+//                logger.error("Rejected media auth \(mediaAuthorizationStatus)")
+
+                let alert = NSAlert()
+                alert.messageText = "Amie needs permissions"
+                alert.informativeText = "Amie needs permission to record your microphone"
+                alert.addButton(withTitle: "Open Settings")
+                alert.addButton(withTitle: "No thanks")
+                alert.alertStyle = .warning
+                if alert.runModal() == .alertFirstButtonReturn {
+                    NSWorkspace.shared.open(
+                        URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
+                    )
+                }
+
+                return false
+            case .authorized:
+                return true
+            case .notDetermined:
+                return await AVCaptureDevice.requestAccess(for: .audio)
+            @unknown default:
+//                logger.error("Unknown media auth \(mediaAuthorizationStatus)")
+                return false
         }
-        
-        return false
     }
     
     private func record(availableContent: SCShareableContent) async {
@@ -92,11 +92,12 @@ class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
         conf.sampleRate = audioSettings["AVSampleRateKey"] as! Int
         conf.channelCount = audioSettings["AVNumberOfChannelsKey"] as! Int
         
-        stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: availableContent.windows.first!), configuration: conf, delegate: self)
+        let stream = SCStream(filter: SCContentFilter(display: availableContent.displays.first!, excludingWindows: []), configuration: conf, delegate: self)
+        self.stream = stream
         do {
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: .global())
             try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global())
-            initMedia(conf: conf)
+            try setupWriters(conf)
             try await stream.startCapture()
         } catch {
             assertionFailure("capture failed")
@@ -105,50 +106,55 @@ class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
         
     }
     
-    func stopRecording() -> String {
-        if stream != nil {
-            stream.stopCapture()
+    @MainActor
+    func stopRecording() async -> String? {
+        let url = assetWriter?.outputURL.absoluteString
+        if let stream {
+            try? await stream.stopCapture()
         }
         stream = nil
-        closeMedia()
-        streamType = nil
-        window = nil
-        screen = nil
+        await closeMedia()
         startTime = nil
+        assetWriter = nil
+        micInput = nil
+        audioInput = nil
         
-        return filePath
+        return url?.replacingOccurrences(of: "file://", with: "")
     }
     
-    func getFilePath() -> String {
+    func getFilePath(date: Date) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "y-MM-dd HH.mm.ss"
-        var fileName = ud.string(forKey: Preferences.fileName)
-        if fileName == nil || fileName!.isEmpty {
-            fileName = "Meeting-%t"
-        }
-        // bit of a magic number but worst case ".flac" is 5 characters on top of this..
-        let fileNameWithDates = fileName!.replacingOccurrences(of: "%t", with: dateFormatter.string(from: Date())).prefix(Int(NAME_MAX) - 5)
-        return ud.string(forKey: "saveDirectory")! + "/" + fileNameWithDates
+        let fileName = "Meeting_%t"
+        let userDesktop = NSSearchPathForDirectoriesInDomains(.desktopDirectory, .userDomainMask, true).first!
+        let fileNameWithDates = fileName.replacingOccurrences(of: "%t", with: dateFormatter.string(from: date)).prefix(Int(NAME_MAX) - 5)
+        
+        return "\(userDesktop)/\(fileNameWithDates).m4a"
     }
     
-    func initMedia(conf: SCStreamConfiguration) {
+    func setupWriters(_ conf: SCStreamConfiguration) throws {
         startTime = nil
         
-        let filePathAndAssetWriter = getFilePathAndAssetWriter()
+        let fileType: AVFileType = .m4a
+        let filePath = getFilePath(date: Date())
         
-        filePath = filePathAndAssetWriter.0
-        vW = filePathAndAssetWriter.1
-        awInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
-        micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
-        awInput.expectsMediaDataInRealTime = true
+        let assetWriter = try AVAssetWriter(outputURL: URL(fileURLWithPath: filePath), fileType: fileType)
+        
+        let audioInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
+        let micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
+        audioInput.expectsMediaDataInRealTime = true
         micInput.expectsMediaDataInRealTime = true
         
-        if vW.canAdd(awInput) {
-            vW.add(awInput)
+        self.assetWriter = assetWriter
+        self.micInput = micInput
+        self.audioInput = audioInput
+        
+        if assetWriter.canAdd(audioInput) {
+            assetWriter.add(audioInput)
         }
         
-        if vW.canAdd(micInput) {
-            vW.add(micInput)
+        if assetWriter.canAdd(micInput) {
+            assetWriter.add(micInput)
         }
         
         let input = audioEngine.inputNode
@@ -158,35 +164,39 @@ class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
             }
         }
         try! audioEngine.start()
-        vW.startWriting()
+        assetWriter.startWriting()
     }
     
-    func closeMedia() {
-        let dispatchGroup = DispatchGroup()
-        dispatchGroup.enter()
-        awInput.markAsFinished()
-        micInput.markAsFinished()
+    func closeMedia() async {
+        audioInput?.markAsFinished()
+        micInput?.markAsFinished()
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
-        vW.finishWriting {
-            self.startTime = nil
-            dispatchGroup.leave()
+        
+        if let assetWriter {
+            await withCheckedContinuation { continuation in
+                assetWriter.finishWriting {
+                    self.startTime = nil
+                    continuation.resume()
+                }
+            }
+            
+            try! await self.merge(assetWriter: assetWriter)
         }
-        dispatchGroup.wait()
     }
     
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
         guard sampleBuffer.isValid else { return }
         
-        if vW != nil && vW?.status == .writing, startTime == nil {
+        if let assetWriter, assetWriter.status == .writing, startTime == nil {
             startTime = Date.now
-            vW.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+            assetWriter.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
         }
         
         switch outputType {
         case .audio:
-            if awInput.isReadyForMoreMediaData {
-                awInput.append(sampleBuffer)
+            if let audioInput, audioInput.isReadyForMoreMediaData {
+                audioInput.append(sampleBuffer)
             }
         case .screen:
             break;
@@ -196,25 +206,42 @@ class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
     }
     
     func stream(_ stream: SCStream, didStopWithError error: Error) { // stream error
-        print("closing stream with error:\n", error,
-              "\nthis might be due to the window closing or the user stopping from the sonoma ui")
-        DispatchQueue.main.async {
+//        logger.error("closing stream with error:\n \(error) \nthis might be due to the window closing or the user stopping from the sonoma ui")
+        Task {
             self.stream = nil
-            _ = self.stopRecording()
+            _ = await self.stopRecording()
         }
     }
     
-    /**
-     Get the filepath of where the asset writer is writing to and asset writer itself
-     */
-    private func getFilePathAndAssetWriter()-> (String, AVAssetWriter?){
-        let fileEnding = "m4a"
-        let fileType: AVFileType = .m4a
+    @MainActor
+    func merge(assetWriter: AVAssetWriter) async throws {
+        let mergeComposition = AVMutableComposition()
+        let audioAsset = AVAsset(url: assetWriter.outputURL)
+        let audioTracks = try await audioAsset.loadTracks(withMediaType: .audio)
+        for audioTrack in audioTracks {
+            let audioCompositionTrack = mergeComposition.addMutableTrack(withMediaType: .audio,
+                                                                         preferredTrackID: kCMPersistentTrackID_Invalid)
+            try await audioCompositionTrack?.insertTimeRange(
+                CMTimeRange(
+                    start: CMTime.zero,
+                    end: audioAsset.load(.duration)),
+                of: audioTrack,
+                at: CMTime.zero
+            )
+        }
         
-        filePath = "\(getFilePath()).\(fileEnding)"
-        let assetWriter = try? AVAssetWriter(outputURL: URL(fileURLWithPath: filePath), fileType: fileType)
+        let outputURL = URL(fileURLWithPath: getFilePath(date: Date()))
         
-        return (filePath, assetWriter)
+        try? FileManager.default.removeItem(at: outputURL)
+
+        if let exportSession = AVAssetExportSession(asset: mergeComposition, presetName: AVAssetExportPresetAppleM4A) {
+            exportSession.outputFileType = .m4a
+            exportSession.shouldOptimizeForNetworkUse = true
+            exportSession.outputURL = outputURL
+            await exportSession.export()
+            try? FileManager.default.removeItem(at: assetWriter.outputURL)
+            try FileManager.default.moveItem(at: outputURL, to: assetWriter.outputURL)
+        }
     }
 }
 
